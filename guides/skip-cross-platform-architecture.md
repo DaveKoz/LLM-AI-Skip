@@ -22,6 +22,10 @@ This document captures architectural patterns for integrating platform-specific 
 
 ---
 
+### ⚠️ CRITICAL: No Automatic Builds
+
+**Do NOT run `swift build`, `skip build`, `gradle build`, or any other automatic build commands.** The user builds manually through Xcode. Build verification is done by the user, not by the agent. Perform manual code review and syntax checking instead.
+
 ### ⚠️ CRITICAL: Pre-Build Checklist
 
 Before building or committing Swift code, verify these five rules:
@@ -33,10 +37,12 @@ Before building or committing Swift code, verify these five rules:
 | **Hashable for ForEach** | `id: \.self` requires `Hashable` conformance | Data models in ForEach |
 | **NSNull Ban** | NO `NSNull()` — use `FieldValue.delete()` | Firestore update/set calls |
 | **Dictionary Safety** | Mark `[String: Any]` as `nonisolated(unsafe)` | Firestore data operations |
+| **Firestore Ref Region** | `DocumentReference` IS `Sendable` — plain `let ref = ...document(id)` is fine; do NOT add `nonisolated(unsafe)` (triggers "unnecessary" warning). `Query` is NOT `Sendable` — use `nonisolated(unsafe) let q = ...whereField(...)` before the `await`. Alternatives: `private nonisolated var db { Firestore.firestore() }`, fresh local `Firestore.firestore()` in the async scope, or rebuild from `doc.documentID` (not `doc.reference`). | All `@MainActor` ViewModels calling async Firebase |
 | **Import SkipFuseUI** | NO `import SwiftUI` — use `import SkipFuseUI` | ALL View `.swift` files |
 | **@Observable Refresh** | Use `refreshID` + `.id()` + `.onChange()` for UI updates | Views with `@Observable` view models |
 | **Toggle in Forms Ban** | NO `Toggle` in forms with buttons — blocks all gestures below it on Android | Login/form views |
 | **Shadow Ban on Cards** | NO `.shadow()` on interactive card containers — blocks button taps on Android | Card/form container views |
+| **Button Tap Area** | NO styling a title-initializer `Button("..") { }` with external `.frame/.padding/.background` — tap area collapses to text bounds on Android. Use `Button { } label: { Text(..).frame(maxWidth:.infinity).padding().background()... }` | ALL full-width buttons (login, forms, CTAs) |
 | **@MainActor on ViewModels** | All `@Observable` ViewModels MUST have `@MainActor` | ALL ViewModel `.swift` files |
 | **NO deinit in ViewModels** | Use `stopListening()` + `.onDisappear` — deinit is nonisolated | ALL ViewModel `.swift` files |
 | **Firestore async only** | `try await .getDocuments()` ONLY — closure form hits wrong overload | ALL ViewModel `.swift` files |
@@ -44,10 +50,12 @@ Before building or committing Swift code, verify these five rules:
 | **swipeActions Ban** | NO `.swipeActions` — use `.contextMenu` | ALL List View `.swift` files |
 | **pickerStyle wheel Ban** | NO `.pickerStyle(.wheel)` — use `.pickerStyle(.menu)` | ALL Picker views |
 | **insetGrouped Ban** | NO `.listStyle(.insetGrouped)` — use `.listStyle(.plain)` | ALL List View `.swift` files |
+| **Layout Protocol Ban** | NO custom `Layout` conforming structs — `ProposedViewSize`, `Subviews`, `sizeThatFits/placeSubviews` not bridged | ALL View `.swift` files |
 | **navigationBarDrawer Ban** | NO `.searchable(placement: .navigationBarDrawer(...))` — omit `placement:` | ALL searchable views |
 | **LocationProvider Permission** | `PermissionManager.requestLocationPermission()` FIRST, then `fetchCurrentLocation()` | Any view using location |
 | **Firestore Field Names** | Read field names MUST match write path — verify all reads use same key as writes | All Firestore read/write code |
 | **Content URI Reading** | `Data(contentsOf:)` crashes on Android `content://` URIs — branch to `putFileAsync(from:)` or use JNI `ContentResolver` | Image upload / file handling |
+| **Google Play Media Permissions Ban** | NO `READ_MEDIA_IMAGES` or `READ_MEDIA_VIDEO` in `AndroidManifest.xml` — Google Play rejects apps that declare these for one-time/profile photo use. Use Android photo picker (no permission needed). Scope `READ_EXTERNAL_STORAGE` with `maxSdkVersion="32"`, `WRITE_EXTERNAL_STORAGE` with `maxSdkVersion="28"`. | `Android/app/src/main/AndroidManifest.xml` |
 | **SkipSQL API (0.16.0)** | Use `context.prepare(sql:)`, `stmt.bind(_:at:)`, `stmt.next()`, `stmt.text/real/long(at:)`, `stmt.close()`, `context.exec(sql:parameters:)` | DAO / SQLite `.swift` files |
 | **SkipSQLPlus `.plus` config** | Use `SkipSQLPlus` + `configuration: .plus` — `.platform` crashes Android at launch (SIGTRAP) | `LocalDatabase.swift`, `Package.swift` |
 | **SQLite Serialization** | ALL SQLite access through `DatabaseSyncQueue.shared.run { }` — no concurrent access | DAO / Repository `.swift` files |
@@ -57,35 +65,45 @@ Before building or committing Swift code, verify these five rules:
 | **Timestamp.seconds Int64** | `Timestamp.seconds` is `Int64` on Android — wrap in `Double(...)` for arithmetic | Firestore timestamp parsing |
 | **lineLimit ClosedRange Ban** | NO `.lineLimit(2...4)` — only single `Int` overload supported; use `.lineLimit(4)` | TextField/Text views |
 | **TextField axis Ban** | NO `TextField(..., axis: .vertical)` — `axis:` parameter unavailable in Skip; use plain `TextField(..., text:)` | Form views with multi-line notes |
+| **TextEditor Flexible Height Ban** | NO `TextEditor` with `.frame(minHeight:maxHeight:)` — triggers Compose infinite measure loop (StackOverflowError); use `TextField` with fixed `.frame(height:)` | Compose input areas (message bars, notes) |
+| **List Multi-Section Duplicate Key** | Compose `LazyColumn` has a FLAT key namespace across all sections — if any two `ForEach` items share an ID, crash with `IllegalArgumentException: Key "Optional(...)" was already used`. Add type-prefixed `listId: String { "type_\(id)" }` to structs and use `ForEach(items, id: \.listId)` | Any `List` with multiple `Section`/`ForEach` blocks |
+| **Combine / @Published / .onReceive Ban** | NO `import Combine`, NO `ObservableObject`, NO `@Published`, NO `.onReceive(publisher:)` — Combine is NOT bridged to Android. Use `@Observable` (Observation macro) ONLY. For notification reactivity use `.task { for await n in NotificationCenter.default.notifications(named:) { } }` | ALL Swift files compiled for Android |
 | **applicationIconBadgeNumber Deprecation** | NO `UIApplication.shared.applicationIconBadgeNumber` — deprecated iOS 17; use `UNUserNotificationCenter.current().setBadgeCount()` | AppDelegate lifecycle methods |
 | **Sendable Closure Properties** | Closure properties on `View` structs MUST be `@MainActor @Sendable () -> Void` — not plain `() -> Void` | ALL reusable View `.swift` files with closure `let` properties |
 | **MainActor from @bridge** | `@bridge` methods are nonisolated — wrap UIKit mutations in `Task { @MainActor in }` | AppDelegate / bridge methods |
+| **monospacedDigit Ban (Rule #68)** | NO `.monospacedDigit()` on Font — not bridged to Android. Use `.font(.caption)` + `.frame(width:alignment:)` for tabular alignment. | All Text/Font code |
+| **Firestore order(by:) Excludes Docs (Rule #69)** | NEVER use `.order(by:)` unless every document is guaranteed to have that field. Android fetches from server and excludes docs missing the field; iOS cache may return them silently. Fetch unordered, sort in Swift. | All Firestore collection queries with `.order(by:)` |
+| **Conditional TabView Tabs (Rule #70)** | NEVER use `if` conditions to add/remove tabs from `TabView`. Android/Compose uses index-based tab paging — inserting a tab shifts all subsequent indices, causing the wrong tab to be selected. Always render all tabs; branch inside each tab's body. | ALL `TabView` with dynamic content |
+| **@AppStorage for Tab Selection (Rule #71)** | Use `@State` (NOT `@AppStorage`) for tab selection in login-gated views. `@AppStorage` persists across logout/login, landing the user on the wrong tab. `@State` resets correctly when the view is re-created after login. | All `ContentView`-style auth-gated tab views |
+| **@Observable Cross-View Freeze (Rule #73)** | `@Observable` property changes do NOT trigger Compose recomposition in child views that receive the object as a plain `var`. Shadow key display state as `@State` primitives in the owning view; copy values from ViewModel after async load; pass as explicit primitive params to children. | Any parent view using `@State var vm = ViewModel()` that passes state to child views |
+| **List Section ForEach Invisible (Rule #74)** | `List { Section { ForEach(...) } }` renders headers but **items are invisible** on Android's Compose `LazyColumn`. Use `ScrollView` + `VStack` with `Text` dividers + `NavigationLink` instead. | Any grouped list view |
+| **Empty Button Action (Rule #75)** | `Button(action: {})` renders but is **completely untappable** on both platforms. Use `NavigationLink` for routing, real closures for actions, or plain `HStack` for non-interactive rows. | Any row or card that needs tap handling |
 
 **Quick grep to find violations:**
 ```bash
 # Find @State private violations
-grep -r "@State private" Sources/
+grep -r "@State private" mobile-apps/member/Sources/
 
 # Find @FocusState violations
-grep -r "@FocusState\|\.focused(" Sources/
+grep -r "@FocusState\|\.focused(" mobile-apps/member/Sources/
 
 # Find NSNull violations
-grep -r "NSNull()" Sources/
+grep -r "NSNull()" mobile-apps/member/Sources/
 
 # Find import SwiftUI violations
-grep -r "import SwiftUI" Sources/
+grep -r "import SwiftUI" mobile-apps/member/Sources/
 
 # Find .lineLimit range violations
-grep -r "\.lineLimit(.*\.\.\.)" Sources/
+grep -r "\.lineLimit(.*\.\.\.)" mobile-apps/member/Sources/
 
 # Find TextField axis violations
-grep -r "axis: \.vertical" Sources/
+grep -r "axis: \.vertical" mobile-apps/member/Sources/
 
 # Find deprecated UIApplication badge violations
-grep -r "applicationIconBadgeNumber" Sources/
+grep -r "applicationIconBadgeNumber" mobile-apps/member/Sources/
 
 # Find non-Sendable closure properties on View structs
-grep -r "let (on[A-Z]|action|onTap|onSelect|onDelete|onConfirm|onDismiss): \(\) -> Void" Sources/
+grep -r "let (on[A-Z]|action|onTap|onSelect|onDelete|onConfirm|onDismiss): \(\) -> Void" mobile-apps/compass/Sources/ mobile-apps/member/Sources/ mobile-apps/admin/Sources/
 ```
 
 ---
@@ -132,6 +150,42 @@ For wildcard imports (all public types in a package):
 import com.google.maps.android.compose.__
 #endif
 ```
+
+---
+
+### Pattern: Android Media Permissions — Google Play Policy Rejection
+
+**Problem:** Google Play rejects apps that declare `READ_MEDIA_IMAGES` or `READ_MEDIA_VIDEO` unless the app's *core purpose* requires persistent, ongoing access to photo/video files in shared storage. Profile photo pickers and one-time image uploads (e.g., uploading a profile picture, attaching a sermon image) do **not** qualify. Submitting with these permissions results in a policy violation rejection even if the app compiled and ran correctly.
+
+**Google Play rejection message:**
+```
+Photo and Video Permissions policy: Permission use is not directly related to your app's core purpose.
+Your app only requires one-time or infrequent access to media files on the device.
+Remove the use of READ_MEDIA_IMAGES/READ_MEDIA_VIDEO permission from all version codes.
+If your app requires one-time, or limited use of photo and video file, remove the permissions
+and consider using the Android photo picker.
+```
+
+**Fix:** Remove `READ_MEDIA_IMAGES` and `READ_MEDIA_VIDEO` entirely. Use the **Android photo picker** (system `ActivityResultContracts.PickVisualMedia` — requires zero permissions). Scope legacy storage permissions to older API levels only.
+
+```xml
+<!-- ❌ Rejected by Google Play — one-time photo upload does not justify this permission -->
+<uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+<uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+
+<!-- ✅ Correct — photo picker needs NO permissions; scope legacy permissions by SDK -->
+<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
+```
+
+**How image upload works without permissions in Skip:**
+1. Android photo picker returns a `content://` URI — no storage permission needed
+2. In Swift code: branch on `#if SKIP` to call Kotlin's `ContentResolver` or `putFileAsync(from:)` (see Content URI Reading rule)
+3. Upload the resolved `Data` or file path directly to Firebase Storage
+
+**Affected files:** `Android/app/src/main/AndroidManifest.xml` in every app module (`member`, `admin`, `compass`)
 
 ---
 
@@ -209,29 +263,29 @@ Private state property 'viewModel' cannot be bridged to Android. Consider making
 
 ```swift
 // ❌ Error: Private state property cannot be bridged to Android
-struct DiscoveryView: View {
-    @State private var viewModel = DiscoveryViewModel()  // Error
+struct ChurchDiscoveryView: View {
+    @State private var viewModel = ChurchDiscoveryViewModel()  // Error
 }
 
-struct NearbyItemsView: View {
+struct NearbyChurchesView: View {
     @State private var showRadiusPicker = false  // Error
 }
 
-struct SearchView: View {
+struct ChurchSearchView: View {
     @State private var selectedState = ""  // Error
     @Environment(\.dismiss) private var dismiss  // Also error
 }
 
 // ✅ Correct: Remove private from ALL @State properties in ALL views
-struct DiscoveryView: View {
-    @State var viewModel = DiscoveryViewModel()
+struct ChurchDiscoveryView: View {
+    @State var viewModel = ChurchDiscoveryViewModel()
 }
 
-struct NearbyItemsView: View {
+struct NearbyChurchesView: View {
     @State var showRadiusPicker = false
 }
 
-struct SearchView: View {
+struct ChurchSearchView: View {
     @State var selectedState = ""
     @Environment(\.dismiss) var dismiss  // Remove private here too
 }
@@ -395,7 +449,7 @@ Image(systemName: "checkmark")
 
 **Problem:** Need to call Firebase Cloud Functions from the app. `httpsCallable.call(payload)` where `payload` is `[String: Any]` causes a Swift 6 Sendable warning (`Sending value of non-Sendable type '[String : Any]' risks causing data races`) because `call(_:)` takes `Any?` (non-`Sendable`). `nonisolated(unsafe)` does NOT suppress this at the call site.
 
-**Solution:** Use direct HTTP with an ID token on **both** iOS and Android. Serialize `[String: Any]` to `Data` synchronously **before** any `await` so it never crosses a concurrency boundary. This is the pattern used in `PaymentService` (Example App 1) and `EventViewModel` (Example App 2).
+**Solution:** Use direct HTTP with an ID token on **both** iOS and Android. Serialize `[String: Any]` to `Data` synchronously **before** any `await` so it never crosses a concurrency boundary. This is the pattern used in `StripePaymentService` (Coffee House) and `RSVPViewModel` (Church Compass).
 
 ```swift
 // Imports — only FirebaseAuth needed (no FirebaseFunctions)
@@ -519,7 +573,7 @@ private func send(_ name: String, payload: [String: Any]) async throws {
 
 **Dependencies:**
 
-`Sources/<Module>/Skip/skip.yml`:
+`Sources/ApiLog/Skip/skip.yml`:
 ```yaml
 build:
   contents:
@@ -561,7 +615,7 @@ dependencies {
 // Button in View body calls shareQRImage on Android
 Button {
     #if SKIP
-    shareQRImage(content: qrContent, label: "Product: \(item.name)")
+    shareQRImage(content: qrContent, label: "Hive: \(hive.name)")
     #else
     showShareSheet = true
     #endif
@@ -829,18 +883,18 @@ var body: some View {
 
 ### Pattern: Deep Link Handling with QR Codes (Cold Start Compatible)
 
-**Context:** Handle QR code scans from camera app to navigate directly to specific entities (Product, Category, Location). Must work when app is closed (cold start) or already running.
+**Context:** Handle QR code scans from camera app to navigate directly to specific entities (Hive, Apiary, Garden). Must work when app is closed (cold start) or already running.
 
 **QR Code URL Format:**
 ```swift
-// Product
-"myapp://product/\(product.id)?code=\(product.qrCode)&name=\(product.name)"
+// Hive
+"apilog://hive/\(hive.id)?code=\(hive.qrCode)&name=\(hive.name)"
 
-// Category  
-"myapp://category/\(category.id)?name=\(category.name)"
+// Apiary  
+"apilog://apiary/\(apiary.id)?name=\(apiary.name)"
 
-// Location
-"myapp://location/\(location.id)?code=\(location.qrCode)&name=\(location.name)"
+// Garden
+"apilog://garden/\(garden.id)?code=\(garden.qrCode)&name=\(garden.name)"
 ```
 
 **Implementation:**
@@ -856,9 +910,9 @@ var body: some View {
     var isProcessingDeepLink = false
     
     enum DeepLinkDestination: Hashable {
-        case product(id: String, qrCode: String?)
-        case category(id: String)
-        case location(id: String, qrCode: String?)
+        case hive(id: String, qrCode: String?)
+        case apiary(id: String)
+        case garden(id: String, qrCode: String?)
         case billing
         case unknown
     }
@@ -883,17 +937,17 @@ var body: some View {
         let queryItems = components.queryItems ?? []
         
         switch components.host?.lowercased() {
-        case "product":
+        case "hive":
             let id = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             let qrCode = queryItems.first(where: { $0.name == "code" })?.value
-            return .product(id: id, qrCode: qrCode)
-        case "category":
+            return .hive(id: id, qrCode: qrCode)
+        case "apiary":
             let id = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-            return .category(id: id)
-        case "location":
+            return .apiary(id: id)
+        case "garden":
             let id = path.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
             let qrCode = queryItems.first(where: { $0.name == "code" })?.value
-            return .location(id: id, qrCode: qrCode)
+            return .garden(id: id, qrCode: qrCode)
         default:
             return .unknown
         }
@@ -930,12 +984,12 @@ extension Notification.Name {
 }
 ```
 
-2. **App.swift** — Handle incoming URLs:
+2. **ApiLogApp.swift** — Handle incoming URLs:
 ```swift
 .onOpenURL { url in
     let destination = DeepLinkHandler.shared.handleURL(url)
     switch destination {
-    case .product, .category, .location:
+    case .hive, .apiary, .garden:
         DeepLinkHandler.shared.postDeepLinkNotification(destination, url: url)
     case .billing:
         await SubscriptionService.shared.refresh()
@@ -949,22 +1003,22 @@ extension Notification.Name {
 ```swift
 struct HomeView: View {
     @State var tab: HomeTab = .home
-    @State var itemsPath = NavigationPath()
-    @State var categoriesPath = NavigationPath()
+    @State var hivesPath = NavigationPath()
+    @State var apiariesPath = NavigationPath()
     @State var deepLinkHandler = DeepLinkHandler.shared
     @State var workspaceReady = false
     @State var coldStartDeepLink: DeepLinkHandler.DeepLinkDestination?
     
     var body: some View {
         TabView(selection: $tab) {
-            NavigationStack(path: $itemsPath) {
-                ItemListView(service: sharedService)
-                    .navigationDestination(for: Item.self) { item in
-                        ItemDetailView(item: item, service: sharedService)
+            NavigationStack(path: $hivesPath) {
+                HiveListView(service: sharedService)
+                    .navigationDestination(for: Hive.self) { hive in
+                        HiveDetailView(hive: hive, service: sharedService)
                     }
             }
-            .tabItem { Label("Items", systemImage: "hexagon.fill") }
-            .tag(HomeTab.items)
+            .tabItem { Label("Hives", systemImage: "hexagon.fill") }
+            .tag(HomeTab.hives)
             // ... other tabs
         }
         .onChange(of: deepLinkHandler.isProcessingDeepLink) { _, isProcessing in
@@ -1009,25 +1063,25 @@ struct HomeView: View {
     
     private func handleDeepLink(_ destination: DeepLinkHandler.DeepLinkDestination) {
         switch destination {
-        case .product(let id, _):
-            tab = .items
-            if let item = findItem(byId: id) {
-                itemsPath.append(item)
+        case .hive(let id, _):
+            tab = .hives
+            if let hive = findHive(byId: id) {
+                hivesPath.append(hive)
             }
-        case .category(let id):
-            tab = .categories
-            if let category = sharedService.categories.first(where: { $0.id.lowercased() == id.lowercased() }) {
-                categoriesPath.append(category)
+        case .apiary(let id):
+            tab = .apiaries
+            if let apiary = sharedService.apiaries.first(where: { $0.id.lowercased() == id.lowercased() }) {
+                apiariesPath.append(apiary)
             }
-        // ... location handling
+        // ... garden handling
         }
         deepLinkHandler.clearPendingDestination()
     }
     
-    private func findItem(byId id: String) -> Item? {
-        for category in sharedService.categories {
-            if let item = category.items.first(where: { $0.id.lowercased() == id.lowercased() }) {
-                return item
+    private func findHive(byId id: String) -> Hive? {
+        for apiary in sharedService.apiaries {
+            if let hive = apiary.hives.first(where: { $0.id.lowercased() == id.lowercased() }) {
+                return hive
             }
         }
         return nil
@@ -1048,22 +1102,22 @@ struct HomeView: View {
 5. **NavigationDestination Placement:** Put `.navigationDestination(for:)` inside the `NavigationStack` content, NOT on the `NavigationStack` itself:
 ```swift
 // ❌ Wrong - causes "misplaced navigationDestination" warning
-NavigationStack(path: $itemsPath) {
-    ItemListView()
+NavigationStack(path: $hivesPath) {
+    HiveListView()
 }
-.navigationDestination(for: Item.self) { ... }  // Wrong!
+.navigationDestination(for: Hive.self) { ... }  // Wrong!
 
 // ✅ Correct
-NavigationStack(path: $itemsPath) {
-    ItemListView()
-        .navigationDestination(for: Item.self) { ... }  // Correct!
+NavigationStack(path: $hivesPath) {
+    HiveListView()
+        .navigationDestination(for: Hive.self) { ... }  // Correct!
 }
 ```
 
 6. **Navigation Title Display:** Add `.navigationBarTitleDisplayMode(.inline)` to ensure title appears in navigation bar:
 ```swift
-ItemDetailView(item: item)
-    .navigationTitle(item.name)
+HiveDetailView(hive: hive)
+    .navigationTitle(hive.name)
     .navigationBarTitleDisplayMode(.inline)
 ```
 
@@ -1084,7 +1138,7 @@ ItemDetailView(item: item)
 **Architecture Overview:**
 - **iOS:** Use CoreImage for QR generation, UIActivityViewController for sharing
 - **Android (Skip Fuse):** Use ZXing library for QR generation, Intent with FileProvider for sharing
-- **Deep Links:** Custom URL scheme (`myapp://`) registered in AndroidManifest.xml and handled via onOpenURL
+- **Deep Links:** Custom URL scheme (`apilog://`) registered in AndroidManifest.xml and handled via onOpenURL
 
 **Dependencies:**
 
@@ -1127,14 +1181,14 @@ dependencies {
 ```swift
 // MARK: - QR Label View (Native Swift for both platforms)
 
-struct ItemQRLabelView: View {
-    var item: Item
+struct HiveQRLabelView: View {
+    var hive: Hive
     @State var showShareSheet = false
     @Environment(\.dismiss) var dismiss
 
-    // Use myapp:// scheme — must match AndroidManifest.xml intent-filter
+    // Use apilog:// scheme — must match AndroidManifest.xml intent-filter
     var qrContent: String {
-        "myapp://product/\(item.id)?code=\(item.qrCode)&name=\(item.name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? item.name)"
+        "apilog://hive/\(hive.id)?code=\(hive.qrCode)&name=\(hive.name.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? hive.name)"
     }
 
     var body: some View {
@@ -1152,7 +1206,7 @@ struct ItemQRLabelView: View {
 
             Button {
                 #if os(Android)
-                shareQRImageAndroid(content: qrContent, label: "Product: \(item.name)")
+                shareQRImageAndroid(content: qrContent, label: "Hive: \(hive.name)")
                 #else
                 showShareSheet = true
                 #endif
@@ -1171,7 +1225,7 @@ struct ItemQRLabelView: View {
         .padding(.top, AppTheme.largePadding)
         .padding(.horizontal, AppTheme.largePadding)
         .sheet(isPresented: $showShareSheet) {
-            ShareSheetView(items: [qrContent, "Product: \(item.name)"], qrContent: qrContent)
+            ShareSheetView(items: [qrContent, "Hive: \(hive.name)"], qrContent: qrContent)
         }
     }
 }
@@ -1317,10 +1371,10 @@ struct QRShareComposer: ContentComposer {
 1. **URL Scheme Consistency** — QR codes and AndroidManifest.xml must use the SAME scheme:
    ```swift
    // QR content
-   "myapp://product/\(id)?code=\(code)"
+   "apilog://hive/\(id)?code=\(code)"
    
    // AndroidManifest.xml
-   <data android:scheme="myapp" />
+   <data android:scheme="apilog" />
    ```
 
 2. **FileProvider Authority** — Must match package name + ".fileprovider":
@@ -1354,7 +1408,7 @@ struct QRShareComposer: ContentComposer {
 adb logcat -s "QRShare"
 
 # Verify FileProvider is registered
-adb shell dumpsys package com.yourcompany.yourapp | grep -i fileprovider
+adb shell dumpsys package com.floatingaxeheadministries.apilog | grep -i fileprovider
 ```
 
 ---
@@ -1432,9 +1486,9 @@ build:
             "plan": SubscriptionPlan.free.rawValue,
             "subscriptionStatus": SubscriptionStatus.free.rawValue,
             "billingInterval": NSNull(), // Clear the billing interval
-            "itemLimit": freeConfig.itemLimit,
+            "hiveLimit": freeConfig.hiveLimit,
             "userLimit": freeConfig.userLimit,
-            "categoryLimit": freeConfig.categoryLimit,
+            "apiaryLimit": freeConfig.apiaryLimit,
             "cancelAtPeriodEnd": false,
             "hasUsedTrial": true
         ]
@@ -1457,9 +1511,9 @@ build:
         var data: [String: Any] = [
             "plan": plan.rawValue,
             "subscriptionStatus": plan == .free ? SubscriptionStatus.free.rawValue : "active",
-            "itemLimit": config.itemLimit,
+            "hiveLimit": config.hiveLimit,
             "userLimit": config.userLimit,
-            "categoryLimit": config.categoryLimit,
+            "apiaryLimit": config.apiaryLimit,
         ]
         
         if let interval = interval {
@@ -1498,10 +1552,14 @@ private func handleTask() async {
 enum IAPProducts {
     static func plan(for productId: String) -> SubscriptionPlan? {
         switch productId {
-        case "com.yourcompany.yourapp.plan1.monthly", "com.yourcompany.yourapp.plan1.yearly":
-            return .plan1
-        case "com.yourcompany.yourapp.plan2.monthly", "com.yourcompany.yourapp.plan2.yearly":
-            return .plan2
+        case "com.faam.apilog.babybee.monthly", "com.faam.apilog.babybee.yearly",
+             "com.floatingaxeheadministries.apilog.babybee.monthly",
+             "com.floatingaxeheadministries.apilog.babybee.yearly":
+            return .babyBee
+        case "com.faam.apilog.hobby.monthly", "com.faam.apilog.hobby.yearly",
+             "com.floatingaxeheadministries.apilog.hobby.monthly",
+             "com.floatingaxeheadministries.apilog.hobby.yearly":
+            return .hobby
         // ... other plans
         default:
             return nil
@@ -1524,7 +1582,7 @@ enum IAPProducts {
    - `plan: "free"`
    - `subscriptionStatus: "free"`
    - `billingInterval: null`
-   - Limits back to free tier (3 items, 1 user)
+   - Limits back to free tier (3 hives, 1 user)
 
 **Cross-Platform Sync:**
 
@@ -1594,7 +1652,7 @@ func updateFirestorePlan(plan: SubscriptionPlan, interval: BillingInterval?) asy
         "plan": plan.rawValue,
         "subscriptionStatus": plan == .free ? "free" : "active",
         "billingSource": "iap",  // ← Mark as In-App Purchase
-        "itemLimit": config.itemLimit,
+        "hiveLimit": config.hiveLimit,
         // ...
     ]
     // ... update Firestore
@@ -1643,7 +1701,7 @@ Your web app should also set `billingSource: "stripe"` when creating subscriptio
 ```javascript
 // Firebase Function or web app
 await db.collection('workspaces').doc(workspaceId).update({
-  plan: 'plan2',
+  plan: 'hobby',
   subscriptionStatus: 'active',
   billingSource: 'stripe',  // ← Important!
   billingInterval: 'monthly',
@@ -1920,10 +1978,10 @@ struct RootView: View {
 - **`Toggle` blocks all gestures below it** — Skip's `Toggle` component intercepts touch events on Android, making every button below it in the same `VStack` unresponsive
 - **`.shadow()` creates invisible blocking layers** — `.shadow(color:radius:x:y:)` generates a hit-testing layer on Android that absorbs button taps
 - **Duplicate `import SkipFuseUI`** — causes unexpected view behavior
-- **`.overlay` on `TextField`/`SecureField` blocks input** — putting the eye toggle button in an `.overlay` on the text field blocks typing; use `HStack` layout instead for eye icon next to field, OR use the Button-in-overlay pattern with `RoundedBorderTextFieldStyle()` (the example app pattern)
+- **`.overlay` on `TextField`/`SecureField` blocks input** — putting the eye toggle button in an `.overlay` on the text field blocks typing; use `HStack` layout instead for eye icon next to field, OR use the Button-in-overlay pattern with `RoundedBorderTextFieldStyle()` (the Coffee House pattern)
 - **`@FocusState` crashes Android** — never use `@FocusState` or `.focused()` in any view
 
-**Working `PasswordField` Pattern (matches example app):**
+**Working `PasswordField` Pattern (matches Coffee House customer app):**
 ```swift
 import Foundation
 import SkipFuseUI
@@ -2077,7 +2135,7 @@ When a new cross-platform pattern is discovered, add it using this template:
 
 ### Pattern: Stripe Payment Flow for Android and iOS
 
-**Context:** Example cross-platform app — donation payment via Stripe PaymentSheet.
+**Context:** Church Compass member app — donation payment via Stripe PaymentSheet. Took multiple sessions to get correct. Do not revisit.
 
 ---
 
@@ -2102,7 +2160,7 @@ The Android Stripe SDK launches the PaymentSheet as an Activity, which requires 
 
 The Android Stripe SDK requires the ephemeral key to be created with API version **`2025-07-30.basil`** (or newer basil versions). Using an older version (e.g., `2024-06-20`) causes the PaymentSheet to dismiss immediately with no error shown to the user.
 
-- Use `buildAndroidPaymentConfiguration` from `PaymentService` — it calls `createStripeEphemeralKeyV1` which accepts an `apiVersion` parameter.
+- Use `buildAndroidPaymentConfiguration` from `StripePaymentService` — it calls `createStripeEphemeralKeyV1` which accepts an `apiVersion` parameter.
 - Do NOT use the ephemeral key returned by `createDonationPaymentIntentV1` directly on Android — it uses an older API version.
 - In `firebase-functions/index.js`, the default `apiVersion` in `createStripeEphemeralKeyV1` and the Stripe client initialization must both use `'2025-07-30.basil'`.
 
@@ -2131,7 +2189,7 @@ const apiVersion = data.apiVersion || '2025-07-30.basil';
 **Android flow:**
 1. User taps **Give** → `isSubmitting = true` → "Processing…" spinner
 2. `viewModel.submit()` creates a PaymentIntent → sets `viewModel.showPaymentSheet = true`
-3. Android Task block calls `PaymentService.shared.buildAndroidPaymentConfiguration(...)` → fetches a fresh ephemeral key via `createStripeEphemeralKeyV1` with correct API version
+3. Android Task block calls `StripePaymentService.shared.buildAndroidPaymentConfiguration(...)` → fetches a fresh ephemeral key via `createStripeEphemeralKeyV1` with correct API version
 4. `androidPaymentConfiguration` set → `SimpleStripePaymentButton("Continue to Payment")` replaces the Give button
 5. User taps **Continue to Payment** (`SimpleStripePaymentButton`) → Stripe sheet opens directly
 6. Result handled in `handleAndroidPaymentResult(_:)`
@@ -2226,11 +2284,11 @@ Button {
            let customerId = viewModel.customerId,
            let clientSecret = viewModel.clientSecret {
             do {
-                let configuration = try await PaymentService.shared.buildAndroidPaymentConfiguration(
+                let configuration = try await StripePaymentService.shared.buildAndroidPaymentConfiguration(
                     stripeCustomerId: customerId,
-                    shopId: viewModel.organization.id,
+                    shopId: viewModel.church.id,
                     amountCents: 0,
-                    merchantDisplayName: viewModel.organization.name,
+                    merchantDisplayName: viewModel.church.churchName,
                     allowsDelayedPaymentMethods: true,
                     existingPaymentIntentClientSecret: clientSecret
                 )
@@ -2277,7 +2335,7 @@ private func presentPaymentSheet(
     let data = PaymentSheetInitData(
         mode: .paymentIntent(clientSecret: clientSecret),
         publishableKey: publishableKey,
-        merchantDisplayName: viewModel.organization.name,
+        merchantDisplayName: viewModel.church.churchName,
         customer: customer,
         allowsDelayedPaymentMethods: false
     )
@@ -2303,13 +2361,13 @@ private func presentPaymentSheet(
 #### Stripe Webhook Setup
 
 - Webhook handler function: `stripeWebhookV2` in `packages/firebase-functions/index.js`
-- Endpoint URL: `https://us-central1-YOUR_PROJECT.cloudfunctions.net/stripeWebhookV2`
+- Endpoint URL: `https://us-central1-church-compass-platform.cloudfunctions.net/stripeWebhookV2`
 - Events to subscribe: `checkout.session.completed`, `customer.subscription.created`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_succeeded`
 - Payload type: **Snapshot** (handler uses `event.data.object` directly)
 - Account type: **Your account** (not Connected accounts)
 - After creating the endpoint, copy the signing secret → update `STRIPE_WEBHOOK_SECRET` in `packages/firebase-functions/.env` → redeploy: `firebase deploy --only functions`
-- The webhook handles **platform subscriptions only**, NOT donation payments. Donation payment completion is tracked in-app via `PaymentSheetService` result.
-- If multiple Stripe apps share the same account, create **separate webhook endpoints** per app — do not share or replace each other's endpoints.
+- The webhook handles **church platform subscriptions only**, NOT donation payments. Donation payment completion is tracked in-app via `PaymentSheetService` result.
+- If multiple Stripe apps share the same account (e.g., Coffee House + Church Compass), create **separate webhook endpoints** per app — do not share or replace each other's endpoints.
 
 ---
 
@@ -2327,7 +2385,7 @@ logger.error("[DonationView] buildAndroidPaymentConfiguration failed: \(error.lo
 
 Pull logs on device:
 ```bash
-adb logcat | grep "YourApp"
+adb logcat | grep "ChurchCompass"
 ```
 
 ---
@@ -2710,7 +2768,7 @@ import SkipFuseUI
 
 **Quick fix:**
 ```bash
-sed -i '' 's/import SwiftUI/import SkipFuseUI/g' Sources/**/*.swift
+sed -i '' 's/import SwiftUI/import SkipFuseUI/g' mobile-apps/member/Sources/ChurchCompass/*.swift
 ```
 
 ---
@@ -2884,7 +2942,7 @@ class MyViewModel {
 
 ### Swift 6 Concurrency — @MainActor ViewModel Pattern (CRITICAL)
 
-All `@Observable` ViewModels MUST follow this pattern:
+All `@Observable` ViewModels in the member app MUST follow this pattern:
 
 ```swift
 @MainActor          // ← REQUIRED: prevents "Sending 'self' risks causing data races"
@@ -3164,7 +3222,7 @@ class ImageCompressorHelper {
                 val scale = MAX_DIMENSION.toFloat() / maxOf(rotated.width, rotated.height)
                 val scaled = if (scale < 1f) Bitmap.createScaledBitmap(rotated, (rotated.width * scale).toInt(), (rotated.height * scale).toInt(), true).also { rotated.recycle() } else rotated
                 // Compress
-                val out = File(ctx.cacheDir, "compressed_${System.currentTimeMillis()}.jpg")
+                val out = File(ctx.cacheDir, "cc_compressed_${System.currentTimeMillis()}.jpg")
                 var quality = 85
                 do {
                     FileOutputStream(out).use { scaled.compress(Bitmap.CompressFormat.JPEG, quality, it) }
@@ -3384,18 +3442,18 @@ import SkipSQL
 import SkipSQLPlus
 
 // ✅ Read with prepared statement
-public func getAll(groupId: String) throws -> [LocalEvent] {
+public func getAll(churchId: String) throws -> [LocalEvent] {
     let stmt = try context.prepare(sql: """
-        SELECT ID, GROUP_ID, TITLE, START_DATE, IS_RECURRING
-        FROM LOCAL_EVENTS WHERE GROUP_ID = ? ORDER BY START_DATE ASC
+        SELECT ID, CHURCH_ID, TITLE, START_DATE, IS_RECURRING
+        FROM LOCAL_EVENTS WHERE CHURCH_ID = ? ORDER BY START_DATE ASC
     """)
     defer { try? stmt.close() }
-    try stmt.bind(.text(groupId), at: 1)        // 1-based bind
+    try stmt.bind(.text(churchId), at: 1)        // 1-based bind
     var results: [LocalEvent] = []
     while try stmt.next() {
         results.append(LocalEvent(
             id:          stmt.text(at: 0) ?? "",  // 0-based read
-            groupId:    stmt.text(at: 1) ?? "",
+            churchId:    stmt.text(at: 1) ?? "",
             title:       stmt.text(at: 2) ?? "",
             startDate:   Date(timeIntervalSince1970: stmt.real(at: 3)),
             isRecurring: stmt.long(at: 4) != 0
@@ -3407,11 +3465,11 @@ public func getAll(groupId: String) throws -> [LocalEvent] {
 // ✅ Write with one-shot exec + parameters (no manual statement lifecycle)
 public func save(_ item: LocalEvent) throws {
     try context.exec(sql: """
-        INSERT OR REPLACE INTO LOCAL_EVENTS (ID, GROUP_ID, TITLE, START_DATE, IS_RECURRING)
+        INSERT OR REPLACE INTO LOCAL_EVENTS (ID, CHURCH_ID, TITLE, START_DATE, IS_RECURRING)
         VALUES (?, ?, ?, ?, ?)
     """, parameters: [
         .text(item.id),
-        .text(item.groupId),
+        .text(item.churchId),
         .text(item.title),
         .real(item.startDate.timeIntervalSince1970),
         .long(item.isRecurring ? 1 : 0)
@@ -3419,8 +3477,8 @@ public func save(_ item: LocalEvent) throws {
 }
 
 // ✅ Transactions + deletes are plain exec calls
-public func deleteAll(groupId: String) throws {
-    try context.exec(sql: "DELETE FROM LOCAL_EVENTS WHERE GROUP_ID = ?", parameters: [.text(groupId)])
+public func deleteAll(churchId: String) throws {
+    try context.exec(sql: "DELETE FROM LOCAL_EVENTS WHERE CHURCH_ID = ?", parameters: [.text(churchId)])
 }
 public func beginTransaction()    throws { try context.exec(sql: "BEGIN") }
 public func commitTransaction()   throws { try context.exec(sql: "COMMIT") }
@@ -3509,7 +3567,7 @@ public actor DatabaseSyncQueue {
 // Usage from a Repository actor:
 let events = try await DatabaseSyncQueue.shared.run {
     let dao = try LocalDatabase.shared.eventDAO()
-    return try await dao.getAll(groupId: groupId)
+    return try await dao.getAll(churchId: churchId)
 }
 ```
 
@@ -3635,27 +3693,27 @@ public func parseTimestampEpoch(_ data: [String: Any], key: String) -> Double {
 
 ```swift
 // ❌ WRONG — stale SQLite cache may hold empty videoUrl/thumbnail forever
-func loadMedia(groupId: String) async {
-    let cached = try await MediaRepository.shared.getAll(groupId: groupId)
-    media = cached.map { MediaItem(from: $0) }  // stale!
+func loadSermons(churchId: String) async {
+    let cached = try await SermonRepository.shared.getAll(churchId: churchId)
+    sermons = cached.map { ChurchSermon(from: $0) }  // stale!
 
-    let result = try await MediaRepository.shared.sync(
-        groupId: groupId, strategy: .cacheFirst
+    let result = try await SermonRepository.shared.sync(
+        churchId: churchId, strategy: .cacheFirst
     )
     if result.hasChanges { /* ...still reading stale cache */ }
 }
 
 // ✅ CORRECT — direct Firestore fetch; source of truth
-func loadMedia(groupId: String) async {
+func loadSermons(churchId: String) async {
     isLoading = true
     do {
         let db = Firestore.firestore()
-        let batch = try await fetchGroupCollection(
-            db: db, groupId: groupId, collection: "media"
+        let batch = try await fetchChurchCollection(
+            db: db, churchId: churchId, collection: "sermons"
         )
-        media = batch.docs.compactMap { doc -> MediaItem? in
+        sermons = batch.docs.compactMap { doc -> ChurchSermon? in
             guard let data = doc.data() else { return nil }
-            return MediaItem(id: doc.documentID, data: data)
+            return ChurchSermon(id: doc.documentID, data: data)
         }
         .sorted { $0.date > $1.date }
     } catch {
@@ -3668,7 +3726,7 @@ func loadMedia(groupId: String) async {
 **Key Rules:**
 1. Direct Firestore fetch is the source of truth for URL-bearing collections
 2. SQLite cache works for offline-critical data (large text, images, etc.)
-3. `fetchGroupCollection()` helper is already cross-platform (iOS direct Firestore SDK + SkipFirebaseFirestore on Android)
+3. `fetchChurchCollection()` helper is already cross-platform (iOS direct Firestore SDK + SkipFirebaseFirestore on Android)
 4. For thumbnails, prefer the Firestore-stored `thumbnail` field (written by the web app's YouTube sync), then fall back to a derived `img.youtube.com/vi/{id}/hqdefault.jpg`
 
 ---
@@ -3699,7 +3757,10 @@ Text("Long text...")
 
 **Applies to:** `Text`, `TextField`, and any view using `.lineLimit(_:)`.
 
-**Affected files:** Admin views using these modifiers.
+**Affected files (Worship Compass admin views):**
+- `AdminWorshipRehearsalsView.swift`
+- `AdminWorshipTeamView.swift`
+- `AdminWorshipSetListsView.swift`
 
 ---
 
@@ -3737,7 +3798,7 @@ Task { @MainActor in
 **Applies to:** Any `@bridge` lifecycle method (`onResume`, `onLaunch`, etc.) that needs to mutate UIKit state or clear badge counts.
 
 **Affected file:**
-- `App.swift`
+- `ChurchCompassAdminApp.swift`
 ---
 
 ### Pattern: Firebase Cloud Messaging — APNS Token Forwarding on iOS
@@ -3751,13 +3812,13 @@ Declining request for FCM Token since no APNS Token specified
 
 This happens when `UIApplicationDelegate.application(_:didRegisterForRemoteNotificationsWithDeviceToken:)` is not implemented in the Darwin `Main.swift`. The Firebase Messaging SDK needs the APNS token forwarded to `Messaging.messaging().apnsToken` before it can request an FCM token.
 
-**Skip projects use a custom `AppDelegate` bridge pattern that lives in the shared SPM module, but the actual `UIApplicationDelegate` methods must be declared in the platform-specific Darwin `Main.swift`.
+**Skip projects use a custom `AppDelegate` bridge pattern** (`ChurchCompassAdminAppDelegate` / `ChurchCompassAppDelegate`) that lives in the shared SPM module, but the actual `UIApplicationDelegate` methods must be declared in the platform-specific Darwin `Main.swift`.
 
 **Fix:** Add the APNS delegate methods to your Darwin `Main.swift`, and import `FirebaseMessaging`:
 
 ```swift
 import SwiftUI
-import YourModule           // your shared SPM module
+import ChurchCompassAdmin   // or ChurchCompass for member app
 import FirebaseMessaging    // ← REQUIRED
 
 // ... AppMain and AppMainDelegateBase aliases ...
@@ -3784,7 +3845,7 @@ import FirebaseMessaging    // ← REQUIRED
 **Key requirements:**
 - **`import FirebaseMessaging`** must be present in Darwin `Main.swift` (not just the shared module)
 - Both methods must be inside the `#if canImport(UIKit)` block
-- Each app target has its own Darwin `Main.swift`
+- This is required for **both admin and member apps** (each has its own Darwin `Main.swift`)
 
 **FCMTokenManager pattern:**
 
@@ -3814,7 +3875,8 @@ let fcmToken = try await withCheckedThrowingContinuation { cont in
 - On **real iOS device**: APNS token arrives quickly (usually <1s) after `registerForRemoteNotifications()`, and FCM token retrieval succeeds.
 
 **Affected files:**
-- `Darwin/Sources/Main.swift`
+- `mobile-apps/admin/Darwin/Sources/Main.swift`
+- `mobile-apps/member/Darwin/Sources/Main.swift`
 
 ---
 
@@ -3841,47 +3903,7 @@ TextField("Notes", text: $formNotes)
 
 **Applies to:** Any `TextField` using `axis: .vertical` or `axis: .horizontal`.
 
-**Affected files:** Admin views using these modifiers.
-
----
-
-### Pattern: Android Edge-to-Edge — Avoid `enableEdgeToEdge()`, Use `WindowCompat`
-
-**Problem:** Google Play's deprecated-API report flags `android.view.Window.setStatusBarColor`, `setNavigationBarColor`, and `LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES`, with obfuscated stack frames like `androidx.activity.v.a` / `x.a` / `z.a` / `w.b`. These originate **inside `androidx.activity`'s `enableEdgeToEdge()` itself** — even the latest version (1.13.0) calls the deprecated setters internally. Bumping the dependency does NOT fix it.
-
-**Fix:** In the Kotlin layer (`Android/app/src/main/kotlin/`), replace every `enableEdgeToEdge()` call with `WindowCompat.setDecorFitsSystemWindows(window, false)`. Control icon contrast via `WindowInsetsControllerCompat`. Same visual result, no flagged calls. On Android 15 (SDK 35) the system enforces transparent bars and the color setters are no-ops, so nothing is lost.
-
-```kotlin
-import androidx.core.view.WindowCompat
-
-// Compose activity — theme-aware, inside a @Composable:
-@Composable
-internal fun SyncSystemBarsWithTheme() {
-    val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val activity = LocalContext.current as? ComponentActivity
-    DisposableEffect(dark) {
-        activity?.window?.let { window ->
-            WindowCompat.setDecorFitsSystemWindows(window, false)
-            val controller = WindowCompat.getInsetsController(window, window.decorView)
-            controller.isAppearanceLightStatusBars = !dark   // light bg => dark icons
-            controller.isAppearanceLightNavigationBars = !dark
-        }
-        onDispose { }
-    }
-}
-
-// Non-Compose activity onCreate:
-// ❌ enableEdgeToEdge()
-// ✅
-WindowCompat.setDecorFitsSystemWindows(window, false)
-```
-
-**Verify before release:**
-```bash
-# Should produce NO output:
-grep -rn "enableEdgeToEdge" Android/app/src/main/kotlin/
-```
-
-**Affected files:**
-- `Android/app/src/main/kotlin/Main.kt`
-- `Android/app/src/main/kotlin/YourActivity.kt`
+**Affected files (Worship Compass admin views):**
+- `AdminWorshipRehearsalsView.swift`
+- `AdminWorshipTeamView.swift`
+- `AdminWorshipSetListsView.swift`

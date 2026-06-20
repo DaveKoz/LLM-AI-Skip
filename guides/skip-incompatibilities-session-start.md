@@ -2,6 +2,21 @@
 description: Load Skip incompatibilities context at the start of a new session — reads the doc, surfaces rules, and primes memory for any new fixes found this session
 ---
 
+> ⚠️ **STANDING RULE — No Automatic Builds**
+>
+> **Do NOT run `swift build`, `skip build`, `gradle build`, or any other automatic build commands.** The user builds manually through Xcode. Build verification is done by the user, not by the agent. Perform manual code review and syntax checking instead.
+>
+> ⚠️ **STANDING RULE — Auto-Document All Fixes**
+>
+> **Every single bug fix, compiler error fix, or API workaround MUST be documented in the same response.**
+> Do NOT wait for the user to ask "document this." Automatically append the new rule to:
+> 1. `docs/skip-incompatibilities.md` (numbered rule, ❌/✅ examples)
+> 2. `.devin/workflows/skip-incompatibilities-session-start.md` (quick-reference pattern)
+> 3. `.windsurf/workflows/skip-cross-platform-architecture.md` (if architectural)
+> 4. Memory entry `7ed0a826-aa35-466e-80e9-bd5aa57e9377` (Pre-Build Checklist)
+>
+> **Decision Guide:** Specific API ban → session-start.md; Architectural pattern → architecture.md; Both → both. Always append to skip-incompatibilities.md regardless.
+
 ## Skip Incompatibilities — Session Start Workflow
 
 Run this at the beginning of any session that involves fixing Skip transpiler errors on a Skip Tools project.
@@ -19,7 +34,7 @@ read_file: docs/skip-incompatibilities.md
 Also read the cross-platform architecture workflow for native library integration patterns:
 
 ```
-read_file: guides/skip-cross-platform-architecture.md
+read_file: .windsurf/workflows/skip-cross-platform-architecture.md
 ```
 
 Summarize the key rules and architecture patterns in memory so they are available throughout the session without re-reading the files.
@@ -42,8 +57,8 @@ When the user pastes a compiler error:
 2. Apply the documented fix pattern.
 3. If the error represents a **new, previously undocumented** incompatibility:
    a. Fix the code.
-   b. Append a new section to `docs/skip-incompatibilities.md` **AND** update `guides/skip-incompatibilities-session-start.md` (this file) with the new rule so it stays in sync when copied to other projects.
-   c. If the fix involves a **cross-platform dependency** (native library, Android API via `#if SKIP`, `ContentComposer`, `FileProvider`, etc.), also add the pattern to `guides/skip-cross-platform-architecture.md` using the template at the bottom of that file.
+   b. Append a new section to `docs/skip-incompatibilities.md` **AND** update `.windsurf/workflows/skip-incompatibilities-session-start.md` (this file) with the new rule so it stays in sync when copied to other projects.
+   c. If the fix involves a **cross-platform dependency** (native library, Android API via `#if SKIP`, `ContentComposer`, `FileProvider`, etc.), also add the pattern to `.windsurf/workflows/skip-cross-platform-architecture.md` using the template at the bottom of that file.
    
    Use this template for incompatibilities:
 
@@ -68,6 +83,27 @@ When the user pastes a compiler error:
       git commit -m "fix(<scope>): <description>; document new Skip incompatibility"
       git push origin main
       ```
+
+### Known Patterns — Google Play Photo/Video Permissions Ban
+
+**Problem:** Google Play rejects apps that declare `READ_MEDIA_IMAGES` or `READ_MEDIA_VIDEO` unless persistent, ongoing access to shared photo/video storage is the core purpose of the app. Profile photo pickers and one-time image uploads do NOT qualify. Declaring these permissions causes a policy violation and app rejection.
+
+**Fix:** Remove `READ_MEDIA_IMAGES` and `READ_MEDIA_VIDEO` from `AndroidManifest.xml` entirely. Use the Android photo picker (system intent — no permission required). Scope `READ_EXTERNAL_STORAGE` to Android 12 and below with `maxSdkVersion="32"`, and `WRITE_EXTERNAL_STORAGE` to Android 9 and below with `maxSdkVersion="28"`.
+
+```xml
+<!-- ❌ Rejected by Google Play for one-time/profile photo use -->
+<uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+
+<!-- ✅ Correct — photo picker needs no permissions; scope legacy storage permissions -->
+<uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32" />
+<uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
+```
+
+The Android photo picker (returned as `content://` URI) is handled in Skip via `putFileAsync(from:)` or JNI `ContentResolver` — see Content URI Reading rule.
+
+---
 
 ### Known Patterns — Firestore Field Deletion (`NSNull` crashes on Android)
 
@@ -364,6 +400,28 @@ TextField("Email", text: $email).textInputAutocapitalization(.never)
 
 ---
 
+### Known Patterns — SF Symbol Platform Branching
+
+**Problem:** Some SF Symbols are reserved or unavailable on Android (e.g., `message` is iOS-only). Android requires the symbol to exist as a `.symbolset` in `Module.xcassets`.
+
+**Fix:** Use `#if os(Android)` to provide an alternative symbol name for Android.
+
+```swift
+// ❌ — "message" may not render on Android
+Image(systemName: "message")
+
+// ✅ — Platform-specific symbol names
+#if os(Android)
+Image(systemName: "bubble")
+#else
+Image(systemName: "message")
+#endif
+```
+
+**Also remember:** `Color("name")` from `.xcassets` fails on Android — define static `Color` extension properties with `#if os(Android)` branch instead.
+
+---
+
 ### Known Patterns — Lazy Stacks and Grids Not Available
 
 **Problem:** `LazyVStack`, `LazyHStack`, `LazyVGrid`, `LazyHGrid` are not bridged to Android.
@@ -379,6 +437,23 @@ VStack(spacing: 10) {
     HStack(spacing: 10) { /* row 1 items */ }
     HStack(spacing: 10) { /* row 2 items */ }
 }
+```
+
+---
+
+### Known Patterns — `Layout` Protocol Not Available
+
+**Problem:** The `Layout` protocol (iOS 16+) and its associated types (`ProposedViewSize`, `Subviews`, `sizeThatFits(proposal:subviews:cache:)`, `placeSubviews(in:proposal:subviews:cache:)`) are not bridged to Android. Using a custom `Layout` conforming struct produces: `static method 'buildExpression' requires that 'FlowLayout' conform to 'View'`.
+
+**Fix:** Replace with `HStack`, `VStack`, `ScrollView(.horizontal)` with `HStack`, or platform-specific Compose alternatives.
+
+```swift
+// ❌
+struct FlowLayout: Layout { ... }
+FlowLayout(spacing: 6) { TagView(...) }
+
+// ✅
+HStack(spacing: 6) { TagView(...) }
 ```
 
 ---
@@ -609,7 +684,7 @@ struct MapPickerView: View {
 
 **Components needed:**
 1. **DeepLinkHandler** — `@Observable` singleton to parse URLs and route navigation
-2. **onOpenURL** — Handle incoming URLs in `AppRootView`
+2. **onOpenURL** — Handle incoming URLs in `ApiLogRootView`
 3. **NavigationPath** — Enable programmatic navigation with `NavigationStack(path: $path)`
 4. **List Views** — Must have `.navigationDestination(for: Entity.self)` modifier
 
@@ -631,9 +706,9 @@ struct MapPickerView: View {
 // 3. Programmatically navigate
 private func handleDeepLink(_ dest: DeepLinkDestination) {
     switch dest {
-    case .product(let id, _):
-        tab = .items
-        if let item = findItem(byId: id) { itemsPath.append(item) }
+    case .hive(let id, _):
+        tab = .hives
+        if let hive = findHive(byId: id) { hivesPath.append(hive) }
     }
     deepLinkHandler.clearPendingDestination()
 }
@@ -647,18 +722,18 @@ private func handleDeepLink(_ dest: DeepLinkDestination) {
 
 ```swift
 // ❌ Wrong - causes "misplaced navigationDestination" warning
-NavigationStack(path: $itemsPath) {
-    ItemListView()
+NavigationStack(path: $hivesPath) {
+    HiveListView()
 }
-.navigationDestination(for: Item.self) { item in  // Ignored!
-    ItemDetailView(item: item)
+.navigationDestination(for: Hive.self) { hive in  // Ignored!
+    HiveDetailView(hive: hive)
 }
 
 // ✅ Correct - modifier on the view inside NavigationStack
-NavigationStack(path: $itemsPath) {
-    ItemListView()
-        .navigationDestination(for: Item.self) { item in
-            ItemDetailView(item: item)
+NavigationStack(path: $hivesPath) {
+    HiveListView()
+        .navigationDestination(for: Hive.self) { hive in
+            HiveDetailView(hive: hive)
         }
 }
 ```
@@ -669,29 +744,29 @@ NavigationStack(path: $itemsPath) {
 
 ```swift
 // ❌ Title may overlap content or appear misplaced
-ItemDetailView(item: item)
-    .navigationTitle(item.name)
+HiveDetailView(hive: hive)
+    .navigationTitle(hive.name)
 
 // ✅ Title appears correctly in navigation bar
-ItemDetailView(item: item)
-    .navigationTitle(item.name)
+HiveDetailView(hive: hive)
+    .navigationTitle(hive.name)
     .navigationBarTitleDisplayMode(.inline)
 ```
 
 **Also remove `.toolbar(.hidden, for: .navigationBar)`** if you want the navigation bar visible on detail views:
 ```swift
 // ❌ Hides navigation bar for entire stack
-NavigationStack(path: $itemsPath) {
-    ItemListView()
+NavigationStack(path: $hivesPath) {
+    HiveListView()
         .toolbar(.hidden, for: .navigationBar)  // Don't do this
 }
 
 // ✅ Let detail views show navigation bar
-NavigationStack(path: $itemsPath) {
-    ItemListView()
-        .navigationDestination(for: Item.self) { item in
-            ItemDetailView(item: item)
-                .navigationTitle(item.name)
+NavigationStack(path: $hivesPath) {
+    HiveListView()
+        .navigationDestination(for: Hive.self) { hive in
+            HiveDetailView(hive: hive)
+                .navigationTitle(hive.name)
                 .navigationBarTitleDisplayMode(.inline)
         }
 }
@@ -699,7 +774,7 @@ NavigationStack(path: $itemsPath) {
 
 ### Known Patterns — Logging
 
-Skip Tools projects use a **shared global `logger`** declared once (e.g. in `FirestoreHelpers.swift` or `App.swift`). Do **not** use `print()` or import `OSLog` directly in individual files.
+Skip Tools projects use a **shared global `logger`** declared once (e.g. in `FirestoreHelpers.swift` or `ApiLogApp.swift`). Do **not** use `print()` or import `OSLog` directly in individual files.
 
 **Exception:** In `#if SKIP` blocks (transpiled to Kotlin), the Swift `logger` is inaccessible due to different visibility boundaries. Use Android's `android.util.Log` directly:
 
@@ -715,7 +790,7 @@ Log.e("Tag", "Error: \(error)")
 
 ```swift
 // ✅ Declared once per module (already exists — do not redeclare)
-let logger: Logger = Logger(subsystem: "com.yourcompany.yourapp", category: "MyApp")
+let logger: Logger = Logger(subsystem: "com.floatingaxeheadministries.apilog", category: "ApiLog")
 
 // ✅ Use in any file — logger is a global, no import needed
 logger.info("Something happened")
@@ -1045,7 +1120,7 @@ struct MyView: View {
 
 **Quick fix command:**
 ```bash
-cd Sources/
+cd mobile-apps/member/Sources/ChurchCompass
 sed -i '' 's/import SwiftUI/import SkipFuseUI/g' *.swift
 ```
 
@@ -1172,6 +1247,28 @@ if let ms = data["startDate"] as? Double {
 guard let ts = data["startDate"] as? Timestamp else { return nil }
 self.startDate = ts.dateValue()
 #endif
+```
+
+---
+
+### Known Patterns — Firestore Integer Fields Decode as `Double` on Android
+
+**Problem:** On Android, Firestore integer fields (e.g., `memberCount`, `paidMonths`) decode as `Double` (e.g., `6.0`), not as `Int`. Using `data["field"] as? Int` returns `nil` on Android, silently producing `0`.
+
+**Fix:** Always decode with a `Double` fallback:
+
+```swift
+// ❌ WRONG — returns 0 on Android
+self.memberCount = data["memberCount"] as? Int ?? 0
+
+// ✅ CORRECT — handles Int (iOS) and Double (Android)
+if let intVal = data["memberCount"] as? Int {
+    self.memberCount = intVal
+} else if let doubleVal = data["memberCount"] as? Double {
+    self.memberCount = Int(doubleVal)
+} else {
+    self.memberCount = 0
+}
 ```
 
 ---
@@ -1503,7 +1600,7 @@ logger.log("📸 got contentResolver")   // visible: adb logcat | grep "MyApp/Im
 | `.searchable(placement: .navigationBarDrawer(...))` | `.searchable(text:prompt:)` — omit `placement:` |
 | `systemImage:` any new icon | Check `Module.xcassets` — if missing, create `.symbolset/Contents.json` + add to `docs/sf-symbols-tracker.md` |
 | `SkipDevice.LocationProvider` (iOS) | Call `PermissionManager.requestLocationPermission()` FIRST; then call `fetchCurrentLocation()` inside `Task { @MainActor in }` — NOT inside `withTaskGroup` child task (CLLocationManager requires main thread run loop); use `@preconcurrency import SkipDevice` |
-| Firestore field mismatch | Verify read field names match write path — `primaryGroupId` was written but `groupId` was read |
+| Firestore field mismatch | Verify read field names match write path — `primaryChurchId` was written but `churchId` was read |
 | `Data(contentsOf: contentURI)` on Android | Branch on `url.scheme == "content"` — use `putFileAsync(from:)` or read via `ContentResolver` through JNI |
 
 **Firestore async/await rule:** In `@MainActor` ViewModels, ALWAYS use `try await` form for all Firestore queries. Never use completion handler form — Skip's overload resolution picks the wrong `FirestoreSource` overload.
@@ -1531,15 +1628,15 @@ Task {
 
 ```swift
 // ❌ WRONG — stale cache holds empty videoUrl/thumbnail
-let cached = try await MediaRepository.shared.getAll(groupId: groupId)
-media = cached.map { MediaItem(from: $0) }
+let cached = try await SermonRepository.shared.getAll(churchId: churchId)
+sermons = cached.map { ChurchSermon(from: $0) }
 
 // ✅ CORRECT — source of truth from Firestore
 let db = Firestore.firestore()
-let batch = try await fetchGroupCollection(db: db, groupId: groupId, collection: "media")
-media = batch.docs.compactMap { doc -> MediaItem? in
+let batch = try await fetchChurchCollection(db: db, churchId: churchId, collection: "sermons")
+sermons = batch.docs.compactMap { doc -> ChurchSermon? in
     guard let data = doc.data() else { return nil }
-    return MediaItem(id: doc.documentID, data: data)
+    return ChurchSermon(id: doc.documentID, data: data)
 }.sorted { $0.date > $1.date }
 ```
 
@@ -1711,7 +1808,7 @@ This happens when a `View` struct has a `let` property holding a closure (e.g., 
 
 ```swift
 // ❌ WRONG — plain () -> Void on struct properties
-struct SearchCard: View {
+struct ChurchSearchCard: View {
     let onJoin: () -> Void
     var body: some View {
         Button(action: onJoin) { ... }  // warning
@@ -1719,7 +1816,7 @@ struct SearchCard: View {
 }
 
 // ✅ CORRECT — annotate the property type
-struct SearchCard: View {
+struct ChurchSearchCard: View {
     let onJoin: @MainActor @Sendable () -> Void
     var body: some View {
         Button(action: onJoin) { ... }
@@ -1731,52 +1828,423 @@ struct SearchCard: View {
 
 **Quick grep to find violations:**
 ```bash
-grep -r "let (on[A-Z]|action|onTap|onSelect|onDelete|onConfirm|onDismiss): \(\) -> Void" Sources/
+grep -r "let (on[A-Z]|action|onTap|onSelect|onDelete|onConfirm|onDismiss): \(\) -> Void" mobile-apps/compass/Sources/
 ```
 
 ---
 
-### Known Patterns — Android Edge-to-Edge: Avoid `enableEdgeToEdge()`
+### Known Patterns — Firestore Dictionary: `nonisolated(unsafe) let`
 
-**Problem:** Google Play's deprecated-API report flags `android.view.Window.setStatusBarColor`, `setNavigationBarColor`, and `LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES`, with obfuscated stack frames like `androidx.activity.v.a` / `x.a` / `z.a` / `w.b`. These come from **inside `androidx.activity`'s `enableEdgeToEdge()`** — even the latest version (1.13.0) calls the deprecated setters internally. Updating the dependency does NOT help.
+**Problem:** Using `var` for a `[String: Any]` Firestore dictionary that is never mutated triggers "variable was never mutated; consider changing to 'let' constant". Separately copying it to `nonisolated(unsafe) let` is redundant.
 
-**Fix:** In the Kotlin layer (`Android/app/src/main/kotlin/`), replace every `enableEdgeToEdge()` call with `WindowCompat.setDecorFitsSystemWindows(window, false)` and set icon contrast via `WindowInsetsControllerCompat`. Same visual result, no flagged calls. On Android 15 (SDK 35) the bars are transparent and the color setters are no-ops anyway.
+**Fix:** Declare the dictionary as `nonisolated(unsafe) let` directly:
 
-```kotlin
-import androidx.core.view.WindowCompat
+```swift
+// ❌
+var updateData: [String: Any] = ["status": "removed", "leftAt": FieldValue.serverTimestamp()]
+nonisolated(unsafe) let finalUpdate = updateData
 
-// Compose activity — theme-aware, inside a @Composable:
-@Composable
-internal fun SyncSystemBarsWithTheme() {
-    val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
-    val activity = LocalContext.current as? ComponentActivity
-    DisposableEffect(dark) {
-        activity?.window?.let { window ->
-            WindowCompat.setDecorFitsSystemWindows(window, false)
-            val controller = WindowCompat.getInsetsController(window, window.decorView)
-            controller.isAppearanceLightStatusBars = !dark   // light bg => dark icons
-            controller.isAppearanceLightNavigationBars = !dark
-        }
-        onDispose { }
-    }
+// ✅
+nonisolated(unsafe) let updateData: [String: Any] = [
+    "status": "removed",
+    "leftAt": FieldValue.serverTimestamp()
+]
+try await ref.updateData(updateData)
+```
+
+---
+
+### Known Patterns — Button Tap Area Collapses on Android (style inside `label`)
+
+**Problem:** `Button("Title") { }` with `.frame(maxWidth: .infinity).padding().background().cornerRadius()` applied to the Button has a tap area that collapses to the **text bounds** on Android — taps on the colored pill do nothing, so it needs several taps and feels broken (Google Play functionality rejection risk).
+
+**Fix:** Use `Button { } label: { }` and move ALL layout/visual modifiers INSIDE the label. Do NOT use `.contentShape()` (banned).
+
+```swift
+// ❌
+Button("Sign In") { Task { await signIn() } }
+    .frame(maxWidth: .infinity).padding().background(Color.accentColor).cornerRadius(14)
+
+// ✅
+Button {
+    Task { await signIn() }
+} label: {
+    Text("Sign In")
+        .frame(maxWidth: .infinity).padding().background(Color.accentColor)
+        .foregroundColor(.white).cornerRadius(14)
+}
+```
+
+---
+
+### Known Patterns — Firestore Reference Region Isolation (#SendingRisksDataRace)
+
+**Problem:** Calling an `async` Firebase method on a `DocumentReference`/`Query`/`StorageReference` from a `@MainActor` ViewModel produces `sending '...' risks causing data races [#SendingRisksDataRace]`. Region isolation (SE-0414) ties a non-Sendable Firebase ref to the actor region when reached via (1) a `self.` property, (2) a local captured from an outer `@MainActor` scope, or (3) `doc.reference` from an awaited snapshot.
+
+**Key distinction (Rule #67, updated):**
+- **`DocumentReference`** IS `Sendable` — plain `let ref = db.collection(...).document(id)` is fine; `nonisolated(unsafe)` on it triggers "unnecessary" warning.
+- **`Query`** IS also `Sendable` (confirmed in current SkipFirebaseFirestore) — plain `let q = db.collection(...).whereField(...)` is fine; `nonisolated(unsafe)` on it also triggers "unnecessary" warning.
+- **Deeply-chained inline subcollection refs** (`db.collection.document.collection.document` used directly in `try await`) STILL trigger `#SendingRisksDataRace` — always assign to a `let` constant first.
+
+```swift
+// ✅ DocumentReference — Sendable, no annotation needed
+let ref = db.collection("foo").document(id)
+try await ref.setData(data, merge: true)
+
+// ✅ Query — also Sendable, no annotation needed
+let q = db.collection("foo")
+    .whereField("status", isEqualTo: "pending")
+let snap = try await q.getDocuments()
+
+// ✅ Deep subcollection chain — assign to let first to avoid inline data race warning
+let memberRef = db.collection("a").document(id).collection("b").document(id2)
+try await memberRef.updateData([...])
+
+// ✅ Alternative — nonisolated handle property disconnects both from actor region
+private nonisolated var db: Firestore { Firestore.firestore() }
+
+// ✅ Alternative — fresh local Firestore handle inside the async scope
+Task {
+    let db = Firestore.firestore()
+    let snap = try await db.collection("users").whereField("churchId", isEqualTo: cid).getDocuments()
 }
 
-// Non-Compose activity onCreate:
-// ❌ enableEdgeToEdge()
-// ✅
-WindowCompat.setDecorFitsSystemWindows(window, false)
+// ✅ Alternative — rebuild ref from doc.documentID (not doc.reference) after await
+let col = Firestore.firestore().collection("churches").document(cid).collection("signups")
+for doc in snap.documents { try? await col.document(doc.documentID).delete() }
 ```
 
-**Quick grep to find violations (should be empty):**
-```bash
-grep -rn "enableEdgeToEdge" Android/app/src/main/kotlin/
+---
+
+### Known Patterns — iOS 18 TabView Sidebar Breaks Navigation on iPad
+
+**Problem:** iOS 18 changed the default `TabView` style on iPad to a sidebar/top-bar layout. This breaks `NavigationStack` inside tabs — tabs appear at the top of the screen, taps on tabs hang, and `NavigationLink` quick actions stop responding entirely. Affects Skip Fuse apps because the iOS binary runs natively on iPad.
+
+**Fix:** Extract tabs into a `@ViewBuilder` property and apply `.tabViewStyle(.tabBarOnly)` conditionally on iOS 18+. Wrap in `#if !os(Android)` so Skip never sees the iOS 18 API.
+
+```swift
+// ❌ — works on iPhone but hangs on iPad running iOS 18+
+var body: some View {
+    TabView(selection: $selectedTab) { ... }
+}
+
+// ✅ — forces traditional bottom tab bar on iPad
+var body: some View {
+    #if !os(Android)
+    if #available(iOS 18.0, *) {
+        tabContent.tabViewStyle(.tabBarOnly)
+    } else {
+        tabContent
+    }
+    #else
+    tabContent
+    #endif
+}
+
+@ViewBuilder
+var tabContent: some View {
+    TabView(selection: $selectedTab) {
+        // ... tabs with NavigationStack
+    }
+}
 ```
+
+**Note:** `.tabBarOnly` is iOS 18+ only — the `if #available` guard is required. The `#if !os(Android)` wrapper prevents Skip from transpiling the iOS 18 API check.
+
+---
+
+### Known Patterns — Firebase Callable Response: All Numbers Are `Double` on Android
+
+**Problem:** Firebase callable function responses decode all JSON numbers as `Double` on Android, not `Int`. Any `as? Int` cast silently returns `nil` and falls through to the `?? 0` default, causing every numeric field to show as zero. iOS returns `Int` natively so the bug is Android-only.
+
+**Fix:** Use a helper that tries `as? Int` first, then falls back to `Int(as? Double ?? 0)`. Apply to all numeric fields decoded from callable response payloads.
+
+```swift
+// ❌ — zero on Android, correct on iOS
+let total = dict["totalAllTime"] as? Int ?? 0
+let count = dict["donorCount"] as? Int ?? 0
+
+// ✅ — correct on both platforms
+private func givingInt(_ dict: [String: Any], _ key: String) -> Int {
+    (dict[key] as? Int) ?? Int(dict[key] as? Double ?? 0)
+}
+
+let total = givingInt(dict, "totalAllTime")
+let count = givingInt(dict, "donorCount")
+```
+
+**Scope:** Applies to any `[String: Any]` response decoded from `Functions.functions().httpsCallable()` or `invokeAdminCallable()`. Does NOT affect Firestore `document.data()` fields (those have a separate pattern). Does NOT affect `String`, `Bool`, or `Double` fields — only `Int` casts are affected.
+
+---
+
+### Known Patterns — Combine / `@Published` / `.onReceive` Not Supported on Android (Rule #66)
+
+**Problem:** Skip Fuse only bridges the Swift **Observation macro** (`@Observable`) to Jetpack Compose. Combine — `ObservableObject`, `@Published`, `PassthroughSubject`, `CurrentValueSubject`, `AnyCancellable` — and the SwiftUI `.onReceive(_:)` modifier that accepts a Combine `Publisher` are **not transpiled** and cause Android build failures.
+
+```swift
+// ❌ WRONG — Combine is not bridged to Android
+import Combine
+class MyViewModel: ObservableObject { @Published var value = "" }
+.onReceive(NotificationCenter.default.publisher(for: myName)) { _ in ... }
+```
+
+```swift
+// ✅ CORRECT — @Observable only; NotificationCenter async sequence for notifications
+import Observation
+@MainActor @Observable class MyViewModel { var value = "" }
+
+.task {
+    for await notification in NotificationCenter.default.notifications(named: myName) {
+        // handle
+    }
+}
+```
+
+**Rule:** Never use Combine anywhere in Skip Fuse cross-platform code. Only `@Observable` (import Observation BEFORE SkipFuseUI) is bridged. Use `.task { for await }` with `NotificationCenter.default.notifications(named:)` instead of `.onReceive(publisher:)`.
+
+---
+
+### Known Patterns — `List` with Multiple `ForEach` Sections: Duplicate Key Crash (Rule #65)
+
+**Problem:** Compose's `LazyColumn` (what `List` maps to) has a **flat key namespace** — unlike SwiftUI where each `Section` scopes its `ForEach` keys independently. If any two items across ALL sections share the same ID, Compose throws `IllegalArgumentException: Key "Optional("...")" was already used`. The `Optional(...)` wrapper is Skip's key serialization format.
+
+**Real trigger:** In `MessagesView`, `messageRequest` documents use `uid1_uid2` as their Firestore document ID (same as `conversation.id`). During Firestore propagation after accepting a request, both a `pendingRequest` and a `conversation` have the same ID → crash.
+
+```swift
+// ❌ CRASH — same ID can appear in both ForEach blocks
+List {
+    Section { ForEach(viewModel.pendingRequests) { req in ... } }  // key = req.id
+    Section { ForEach(viewModel.conversations) { conv in ... } }   // key = conv.id ← collision!
+}
+```
+
+**Fix:** Add a type-prefixed `listId` computed property to each struct and use `id: \.listId` in ForEach:
+
+```swift
+// ✅ CORRECT — type prefix ensures global uniqueness
+struct MessageRequest: Identifiable {
+    var listId: String { "req_\(id)" }
+}
+struct Conversation: Identifiable {
+    var listId: String { "conv_\(id)" }
+}
+
+List {
+    Section { ForEach(viewModel.pendingRequests, id: \.listId) { ... } }
+    Section { ForEach(viewModel.conversations, id: \.listId) { ... } }
+}
+```
+
+**Applies to:** Any `List` with multiple `ForEach` blocks or sections on Android. Always add type-prefixed `listId` when the same `List` renders items from different model types or collections.
+
+---
+
+### Known Patterns — `TextEditor` with Flexible `minHeight`/`maxHeight` Crashes Android (Rule #64)
+
+**Problem:** `TextEditor(text:)` with `.frame(minHeight: X, maxHeight: Y)` inside a `VStack` causes a `StackOverflowError` on Android. Compose's layout pass enters an infinite `forceMeasureTheSubtree → remeasure → measure` loop because the flexible height range is ambiguous in the parent `Column` context. The crash occurs at draw time and kills the screen.
+
+```swift
+// ❌ CRASH on Android — ambiguous flexible height constraints
+TextEditor(text: $messageText)
+    .frame(minHeight: 36, maxHeight: 100)
+```
+
+**Fix:** Replace with `TextField` at a fixed height. `TextEditor` + flexible min/max is banned on Android.
+
+```swift
+// ✅ CORRECT — fixed height, no measure ambiguity
+TextField("Message…", text: $messageText)
+    .frame(height: 36)
+```
+
+**Applies to:** Any `TextEditor` or component using `.frame(minHeight:maxHeight:)` inside a `VStack`/`Column`. Use `.frame(height:)` (fixed) instead. Also note: `TextField(..., axis: .vertical)` is separately banned (Rule #39).
+
+---
+
+### Known Patterns — `.monospacedDigit()` Is Unavailable in Skip (Rule #68)
+
+**Problem:** `.monospacedDigit()` on `Font` is not bridged to Jetpack Compose. Produces `'monospacedDigit' is unavailable` on Android.
+
+```swift
+// ❌ WRONG
+.font(.caption.monospacedDigit())
+
+// ✅ CORRECT
+.font(.caption)
+.frame(width: 24, alignment: .trailing)
+```
+
+**Rule:** Never use `.monospacedDigit()` in cross-platform Skip code. Use `.frame(width:alignment:)` for tabular alignment.
+
+---
+
+### Known Patterns — Firestore `.order(by:)` Excludes Documents Missing the Field on Android (Rule #69)
+
+**Problem:** A Firestore query with `.order(by: "fieldName")` only returns documents that contain `fieldName`. On iOS, the local SDK cache often includes all documents regardless. On Android, the SDK fetches from the server and correctly excludes docs without the field — silently returning an empty or partial result set.
+
+This caused `loadMemberships()` to return zero results on Android, keeping `isOnWorshipTeam = false` and hiding both the Schedule content and the Worship tab.
+
+```swift
+// ❌ WRONG — excludes any membership doc missing "joinedAt" on Android
+let snap = try await ref.order(by: "joinedAt", descending: true).getDocuments()
+
+// ✅ CORRECT — fetch all, sort in Swift
+let snap = try await ref.getDocuments()
+let loaded = snap.documents.compactMap { MyModel(from: $0) }
+    .sorted { $0.joinedAt > $1.joinedAt }
+```
+
+**Rule:** Never use `.order(by:)` unless every document is guaranteed to have that field. Always fetch unordered and sort in Swift.
+
+---
+
+### Known Patterns — `logger.debug()` Invisible on Android; Use `logger.info()` (Rule #72)
+
+**Problem:** `Logger.debug()` maps to `Log.d()` on Android, which is **filtered by default** — nothing appears in `adb logcat`. Additionally, in Swift 6 strict concurrency, interpolating `self`-owned properties inside the `OSLogMessage` autoclosure requires capturing them in a local `let` first.
+
+```swift
+// ❌ WRONG — debug level suppressed on Android; also self-capture error for properties
+logger.debug("[trace] isOnWorshipTeam=\(isOnWorshipTeam)")
+
+// ✅ CORRECT — info level always visible; capture self-owned props in locals
+let onTeam = isOnWorshipTeam
+logger.info("[trace] isOnWorshipTeam=\(onTeam)")
+```
+
+**ADB logcat command** (tag = `category:` value in `Logger(subsystem:category:)`):
+```bash
+adb logcat -s WorshipCompass
+```
+
+**Rule:** Always use `logger.info()` (or `.warning()`/`.error()`) for Android-visible logs. Only use `logger.debug()` for iOS-only diagnostics.
+
+---
+
+### Known Patterns — `@Observable` Cross-View Property Changes Don't Recompose Child Views (Rule #73)
+
+**Problem:** An `@Observable @MainActor` ViewModel owned by a parent as `@State var vm = ViewModel()` does NOT automatically trigger Compose recomposition in child views that receive `vm` as a plain `var` parameter. iOS uses `withObservationTracking` (per-property, anywhere in the tree). Skip's Compose bridge does NOT replicate this — `vm.someProperty = newValue` silently updates the Kotlin object but never invalidates any child composable that was passed `vm`. Child views freeze at their initial composition state.
+
+```swift
+// ❌ WRONG — child view frozen; isOnWorshipTeam always reads as false
+ContentView:     CompassScheduleView(churchId: vm.worshipTeamChurchId ?? "")
+ChildView:       var vm: CompassChurchViewModel  // plain var — no Compose subscription
+
+// ✅ CORRECT — shadow key state as @State primitives; copy after async load
+ContentView:
+    @State var worshipChurchId: String = ""
+    @State var isMembershipLoading: Bool = true
+    @State var onWorshipTeam: Bool = false
+    .task {
+        await vm.loadMemberships()
+        worshipChurchId = vm.worshipTeamChurchId ?? ""  // @State change triggers recompose
+        onWorshipTeam = vm.isOnWorshipTeam
+        isMembershipLoading = false
+    }
+    body: CompassScheduleView(churchId: worshipChurchId)
+          WorshipHubView(vm: vm, isLoading: isMembershipLoading, isOnWorshipTeam: onWorshipTeam)
+
+ChildView:
+    var isLoading: Bool        // primitive param — change forces recomposition
+    var isOnWorshipTeam: Bool  // primitive param — change forces recomposition
+```
+
+**Rule:** For any state that gates a UI branch in a child view, copy the ViewModel value to a `@State` primitive in the owning view after async load and pass it as an explicit parameter. Do NOT rely on `@Observable` cross-view propagation on Android.
+
+---
+
+### Known Patterns — `List` + `Section` + Nested `ForEach` Items Invisible on Android (Rule #74)
+
+**Problem:** Skip maps `List` → Compose `LazyColumn`. `Section { ForEach(...) }` inside `List` renders the header but **the ForEach items never appear** on Android. The nested ForEach isn't properly expanded into LazyColumn items.
+
+```swift
+// ❌ WRONG — headers show, rows invisible on Android
+List {
+    Section {
+        ForEach(items) { item in RowView(item: item) }
+    } header: { Text("Header") }
+}
+
+// ✅ CORRECT — flat ScrollView + VStack + NavigationLink
+ScrollView {
+    VStack(spacing: 0) {
+        Text("Header")
+        Divider()
+        ForEach(items, id: \.id) { item in
+            NavigationLink(destination: DetailView(item: item)) {
+                RowView(item: item)
+            }
+            Divider()
+        }
+    }
+}
+```
+
+**Rule:** Never nest `ForEach` inside `Section` inside `List` on Android. Use `ScrollView` + `VStack` with manual `Text` dividers.
+
+---
+
+### Known Patterns — `Button(action: {})` Is Completely Untappable (Rule #75)
+
+**Problem:** A `Button` with an empty action closure renders but **never responds to taps** on iOS or Android. The runtime optimizes away the gesture.
+
+```swift
+// ❌ WRONG — looks interactive, zero response
+Button(action: {}) { RowView(item: item) }
+
+// ✅ CORRECT — NavigationLink for routing, real closure for actions
+NavigationLink(destination: DetailView(item: item)) { RowView(item: item) }
+```
+
+**Rule:** Never ship a `Button` with an empty action. Use `NavigationLink`, `.sheet`, or a real `@State`-mutating closure.
+
+---
+
+### Known Patterns — Conditional `TabView` Tabs Break Compose Pager on Android (Rule #70)
+
+**Problem:** Putting `if condition { SomeView().tabItem {...}.tag(...) }` inside a `TabView` changes the number of tabs at runtime. iOS handles this via tag-based selection. Android/Compose uses an index-based pager — inserting a new tab at position N shifts all subsequent tabs, causing the wrong tab to appear selected (e.g., jumping to "More" when "Worship" is inserted).
+
+```swift
+// ❌ WRONG — tab count changes after data loads, pager jumps
+TabView(selection: $tab) {
+    ScheduleView().tabItem { ... }.tag(.schedule)
+    if vm.isOnWorshipTeam {           // inserts tab at runtime
+        WorshipView().tabItem { ... }.tag(.worship)
+    }
+    MoreView().tabItem { ... }.tag(.more)
+}
+
+// ✅ CORRECT — fixed tab count, conditional content INSIDE the tab body
+TabView(selection: $tab) {
+    ScheduleView().tabItem { ... }.tag(.schedule)
+    WorshipView(vm: vm).tabItem { ... }.tag(.worship)   // always present
+    MoreView().tabItem { ... }.tag(.more)
+}
+// Inside WorshipView.body: if !vm.isOnWorshipTeam { placeholder } else { content }
+```
+
+**Rule:** Never conditionally show/hide tabs. Always render a fixed set of tabs; branch content inside each tab's `body`.
+
+---
+
+### Known Patterns — `@AppStorage` for Tab Selection Persists Across Login Sessions (Rule #71)
+
+**Problem:** `@AppStorage("tab") var tab = ContentTab.schedule` persists the selected tab in `UserDefaults`. After logout/login the previous tab is restored — if the user was on "More", the next login opens to "More".
+
+```swift
+// ❌ WRONG — persists across auth sessions
+@AppStorage("tab") var tab = ContentTab.schedule
+
+// ✅ CORRECT — always resets to default on login
+@State var tab = ContentTab.schedule
+```
+
+Because `ContentView` is re-instantiated on every login, `@State` correctly starts at the default. Reserve `@AppStorage` for settings that should intentionally survive logout.
 
 ---
 
 ### Step 5 — End-of-session commit check
 
 Before ending the session, confirm that:
-- All new incompatibilities discovered this session are appended to `docs/skip-incompatibilities.md`.
+- All new incompatibilities discovered this session are appended to `Docs/skip-incompatibilities.md`.
 - The memory entry is up to date.
 - All changes are committed and pushed.
